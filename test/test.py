@@ -1,101 +1,84 @@
-# SPDX-FileCopyrightText: © 2024 Tiny Tapeout
+# SPDX-FileCopyrightText: © 2024 Your Name
 # SPDX-License-Identifier: Apache-2.0
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import ClockCycles, FallingEdge
 
-
-# -------------------------------
-# Shift 8-bit value serially
-# -------------------------------
-async def shift_byte(dut, value, sel):
-    # sel = 0 → A, 1 → B
-
-    for i in range(8):
-        # MSB-first (IMPORTANT FIX)
-        bit = (value >> (7 - i)) & 1
-
-        # ui_in mapping:
-        # bit0 = serial_in
-        # bit1 = sel_ab
-        # bit2 = load
-        dut.ui_in.value = (bit << 0) | (sel << 1) | (1 << 2)
-
-        await ClockCycles(dut.clk, 1)
-
-    # Disable load
-    dut.ui_in.value = 0
-    await ClockCycles(dut.clk, 1)
-
-
-# -------------------------------
-# Read 8-bit result serially
-# -------------------------------
-async def read_result(dut):
-    result = 0
-
-    for i in range(8):
-        await ClockCycles(dut.clk, 1)
-
-        val = dut.uo_out[0].value
-
-        # Safe read (avoid X crash)
-        if not val.is_resolvable:
-            raise Exception("X detected on output")
-
-        bit = int(val)
-        result |= (bit << i)
-
-    return result
-
-
-# -------------------------------
-# Main Test
-# -------------------------------
 @cocotb.test()
 async def test_project(dut):
+    dut._log.info("Start 4-Cycle Kogge-Stone Adder Test")
 
-    dut._log.info("Start Serial Kogge-Stone Test")
-
-    # Clock
-    clock = Clock(dut.clk, 10, unit="us")
+    # 1. Initialize Clock (10 MHz / 100ns period)
+    clock = Clock(dut.clk, 100, units="ns")
     cocotb.start_soon(clock.start())
 
-    # Reset
+    # 2. Reset Sequence
     dut.ena.value = 1
     dut.ui_in.value = 0
+    dut.uio_in.value = 0
     dut.rst_n.value = 0
 
+    dut._log.info("Applying reset...")
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
-
-    # Test values
-    a = 0
-    b = 29
-
-    dut._log.info(f"Loading A={a}, B={b}")
-
-    # Load A
-    await shift_byte(dut, a, sel=0)
-
-    # Load B
-    await shift_byte(dut, b, sel=1)
-
-    # Start computation
-    dut._log.info("Starting computation")
-    dut.ui_in.value = (1 << 3)  # start = 1
+    
+    # Wait one cycle to ensure we are aligned with the S_LOAD_A state
     await ClockCycles(dut.clk, 1)
-    dut.ui_in.value = 0
 
-    # Wait for result to latch (IMPORTANT)
-    await ClockCycles(dut.clk, 2)
+    # 3. Define Test Vectors: (A, B, Cin)
+    test_vectors = [
+        (15, 10, 0),      # Standard addition (no overflow)
+        (200, 100, 0),    # Addition with carry out
+        (0, 0, 0),        # Zero test
+        (255, 0, 1),      # Cin ripple test
+        (255, 255, 1)     # Max values
+    ]
 
-    # Read result serially
-    result = await read_result(dut)
+    # 4. Run Test Cases
+    for a, b, cin in test_vectors:
+        dut._log.info(f"Testing A={a}, B={b}, Cin={cin}")
 
-    expected = (a + b) & 0xFF
+        # --- Cycle 0: S_LOAD_A ---
+        # Drive A on ui_in, and Cin on uio_in[0]
+        dut.ui_in.value = a
+        dut.uio_in.value = cin
+        await ClockCycles(dut.clk, 1)
 
-    dut._log.info(f"Result={result}, Expected={expected}")
+        # --- Cycle 1: S_LOAD_B ---
+        # Drive B on ui_in
+        dut.ui_in.value = b
+        await ClockCycles(dut.clk, 1)
 
-    assert result == expected, f"FAIL: got={result}, expected={expected}"
+        # --- Cycle 2: S_OUT_SUM ---
+        # The FSM is now outputting the sum. We wait for the falling edge 
+        # to safely sample the value in the middle of the clock cycle.
+        await FallingEdge(dut.clk)
+        
+        # Read the Sum
+        sum_val = int(dut.uo_out.value)
+        
+        # Move to the next clock edge
+        await ClockCycles(dut.clk, 1) 
+
+        # --- Cycle 3: S_OUT_CARRY ---
+        await FallingEdge(dut.clk)
+        
+        # Read the Carry Out
+        cout_val = int(dut.uo_out.value)
+
+        # Calculate Expected Results
+        expected_total = a + b + cin
+        expected_sum = expected_total & 0xFF       # Bottom 8 bits
+        expected_cout = (expected_total >> 8) & 1  # 9th bit
+
+        dut._log.info(f"Result: Sum={sum_val} (Exp: {expected_sum}), Cout={cout_val} (Exp: {expected_cout})")
+
+        # Assertions to fail the test if there is a mismatch
+        assert sum_val == expected_sum, f"FAIL: A={a}, B={b}. Sum got {sum_val}, expected {expected_sum}"
+        assert cout_val == expected_cout, f"FAIL: A={a}, B={b}. Cout got {cout_val}, expected {expected_cout}"
+        
+        # Move to the next rising edge so the loop perfectly aligns with S_LOAD_A again
+        await ClockCycles(dut.clk, 1) 
+        
+    dut._log.info("All tests passed!")
