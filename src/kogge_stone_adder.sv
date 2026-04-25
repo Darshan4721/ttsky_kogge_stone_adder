@@ -16,8 +16,13 @@ module kogge_stone_adder #(
     wire [width-1:0] gen       [0:final_stage];
 
     // Stage 0
-    assign propagate[0] = a ^ b;
-    assign gen[0]       = a & b;
+    wire [width-1:0] gen0_raw;
+
+assign propagate[0] = a ^ b;
+assign gen0_raw     = a & b;
+
+// properly include cin without multiple drivers
+assign gen[0] = gen0_raw | (propagate[0] & { {width-1{1'b0}}, cin });
 
     // include cin
     assign gen[0][0] = gen[0][0] | (propagate[0][0] & cin);
