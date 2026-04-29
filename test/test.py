@@ -1,50 +1,83 @@
+# SPDX-FileCopyrightText: © 2024 Tiny Tapeout
+# SPDX-License-Identifier: Apache-2.0
+
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, FallingEdge
+from cocotb.triggers import ClockCycles
+
 
 @cocotb.test()
 async def test_project(dut):
-    clock = Clock(dut.clk, 100, units="ns")
+    dut._log.info("Start Serial KSA Test")
+
+    # Set the clock period to 10 us (100 KHz)
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     # Reset
-    dut.rst_n.value = 0
+    dut._log.info("Reset")
+    dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
-    await ClockCycles(dut.clk, 2)
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
-    await ClockCycles(dut.clk, 1)
 
-    test_vectors = [(15, 10, 0), (200, 100, 0)]
+    async def shift_in(a, b):
+        for i in range(8):
+            a_bit = (a >> i) & 1
+            b_bit = (b >> i) & 1
+            # ui_in[0] = a_sin, [1] = b_sin, [3] = shift_en
+            dut.ui_in.value = (a_bit << 0) | (b_bit << 1) | (1 << 3)
+            await ClockCycles(dut.clk, 1)
+        dut.ui_in.value = 0
 
-    for a, b, cin in test_vectors:
-        # Cycle 0: S_LOAD_A (Drive inputs while clock is low)
-        await FallingEdge(dut.clk)
-        dut.ui_in.value = a
-        dut.uio_in.value = cin
-        
-        # Cycle 1: S_LOAD_B
+    async def load_and_get_cout(cin):
+        # ui_in[2] = cin, [4] = load_en
+        dut.ui_in.value = (cin << 2) | (1 << 4)
         await ClockCycles(dut.clk, 1)
-        dut.ui_in.value = b
-        
-        # Cycle 2: Wait for S_OUT_SUM (Adder computes during this cycle)
-        await ClockCycles(dut.clk, 1)
-        
-        # Cycle 3: Wait for S_OUT_CARRY
-        await ClockCycles(dut.clk, 1)
-        
-        # Sample outputs
-        # Note: Depending on your FSM, you might need to read 
-        # result sequentially over two cycles if the port is shared.
-        await FallingEdge(dut.clk)
-        sum_val = int(dut.uo_out.value)
-        
-        await ClockCycles(dut.clk, 1)
-        await FallingEdge(dut.clk)
-        cout_val = int(dut.uo_out.value)
+        cout = dut.uo_out.value & (1 << 1)
+        dut.ui_in.value = 0
+        return bool(cout)
 
-        expected_total = a + b + cin
-        assert sum_val == (expected_total & 0xFF), f"Sum fail: got {sum_val}, exp {expected_total & 0xFF}"
-        assert cout_val == ((expected_total >> 8) & 1), f"Cout fail: got {cout_val}"
+    async def shift_out():
+        sum_val = 0
+        for i in range(8):
+            # uo_out[0] = sum_sout
+            bit = dut.uo_out.value & 1
+            sum_val |= (int(bit) << i)
+            # ui_in[3] = shift_en
+            dut.ui_in.value = (1 << 3)
+            await ClockCycles(dut.clk, 1)
+        dut.ui_in.value = 0
+        return sum_val
 
-    dut._log.info("Test Passed!")
+    # Test Case 1: 20 + 30
+    a, b, cin = 20, 30, 0
+    expected_sum = (a + b + cin) & 0xFF
+    expected_cout = (a + b + cin) >> 8
+
+    dut._log.info(f"Test 1: {a} + {b} + {cin}")
+    await shift_in(a, b)
+    cout = await load_and_get_cout(cin)
+    result_sum = await shift_out()
+
+    dut._log.info(f"Result: Sum={result_sum}, Cout={cout}")
+    assert result_sum == expected_sum
+    assert cout == expected_cout
+
+    # Test Case 2: 255 + 1
+    a, b, cin = 255, 1, 0
+    expected_sum = (a + b + cin) & 0xFF
+    expected_cout = (a + b + cin) >> 8
+
+    dut._log.info(f"Test 2: {a} + {b} + {cin}")
+    await shift_in(a, b)
+    cout = await load_and_get_cout(cin)
+    result_sum = await shift_out()
+
+    dut._log.info(f"Result: Sum={result_sum}, Cout={cout}")
+    assert result_sum == expected_sum
+    assert cout == expected_cout
+
+    dut._log.info("All tests passed!")
