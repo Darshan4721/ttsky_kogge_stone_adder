@@ -36,7 +36,7 @@ async def test_project(dut):
         # ui_in[2] = cin, [4] = load_en
         dut.ui_in.value = (cin << 2) | (1 << 4)
         await ClockCycles(dut.clk, 1)
-        cout = dut.uo_out.value & (1 << 1)
+        cout = int(dut.uo_out.value) & (1 << 1)
         dut.ui_in.value = 0
         return bool(cout)
 
@@ -44,7 +44,7 @@ async def test_project(dut):
         sum_val = 0
         for i in range(8):
             # uo_out[0] = sum_sout
-            bit = dut.uo_out.value & 1
+            bit = int(dut.uo_out.value) & 1
             sum_val |= (int(bit) << i)
             # ui_in[3] = shift_en
             dut.ui_in.value = (1 << 3)
