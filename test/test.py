@@ -3,7 +3,7 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import ClockCycles, Timer
 
 
 @cocotb.test()
@@ -27,6 +27,7 @@ async def test_project(dut):
         for i in range(8):
             a_bit = (a >> i) & 1
             b_bit = (b >> i) & 1
+            dut._log.info(f"Shift in bit {i}: a={a_bit}, b={b_bit}")
             # ui_in[0] = a_sin, [1] = b_sin, [3] = shift_en
             dut.ui_in.value = (a_bit << 0) | (b_bit << 1) | (1 << 3)
             await ClockCycles(dut.clk, 1)
@@ -36,6 +37,7 @@ async def test_project(dut):
         # ui_in[2] = cin, [4] = load_en
         dut.ui_in.value = (cin << 2) | (1 << 4)
         await ClockCycles(dut.clk, 1)
+        await Timer(1, units="ns")
         cout = int(dut.uo_out.value) & (1 << 1)
         dut.ui_in.value = 0
         return bool(cout)
@@ -43,8 +45,10 @@ async def test_project(dut):
     async def shift_out():
         sum_val = 0
         for i in range(8):
+            await Timer(1, units="ns")
             # uo_out[0] = sum_sout
             bit = int(dut.uo_out.value) & 1
+            dut._log.info(f"Read bit {i}: {bit}")
             sum_val |= (int(bit) << i)
             # ui_in[3] = shift_en
             dut.ui_in.value = (1 << 3)
